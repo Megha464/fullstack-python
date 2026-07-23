@@ -1,0 +1,118 @@
+name: Django CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  # ----------------------------------------
+  # STAGE 1: Build 
+  # ----------------------------------------
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.8'
+        cache: 'pip'
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r student_api/requirements.txt
+
+  # ----------------------------------------
+  # STAGE 2: Test Suite Execution
+  # ----------------------------------------
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: student_db
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: Root@123
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.8'
+        cache: 'pip'
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r student_api/requirements.txt
+
+    - name: Run Django Tests
+      env:
+        DB_NAME: student_db
+        DB_USER: postgres
+        DB_PASSWORD: Root@123
+        DB_HOST: localhost
+        DB_PORT: 5432
+        SECRET_KEY: ci-test-secret-key-not-for-prod
+      run: |
+        cd student_api
+        python manage.py check
+        python manage.py test
+
+  # ----------------------------------------
+  # STAGE 3A: Production Deployment to Render
+  # ----------------------------------------
+  deploy-render:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Trigger Render Deploy Hook
+      env:
+        RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+      run: |
+        if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+          echo "Warning: RENDER_DEPLOY_HOOK_URL secret is not set in GitHub."
+          echo "Skipping Render deployment step."
+        else
+          echo "Triggering deployment to Render..."
+          curl -f "$RENDER_DEPLOY_HOOK_URL"
+        fi
+
+  # ----------------------------------------
+  # STAGE 3B: Production Deployment to Vercel
+  # ----------------------------------------
+  deploy-vercel:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Deploy to Vercel
+      if: "${{ secrets.VERCEL_TOKEN != '' }}"
+      uses: amondnet/vercel-action@v20
+      with:
+        vercel-token: ${{ secrets.VERCEL_TOKEN }}
+        vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+        vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+        vercel-args: '--prod'
+
